@@ -22,7 +22,7 @@ from datetime import date, datetime, timedelta
 
 from flask import Flask, request as flask_request
 from telegram import (
-    Update, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
+    Update, BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, InputFile
 )
 from telegram.ext import (
     Application, ApplicationBuilder, CommandHandler, MessageHandler,
@@ -273,78 +273,6 @@ async def annulla(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("❌ Operazione annullata.")
     return ConversationHandler.END
 
-# ── /oggi ────────────────────────────────────────────────────────────────────
-
-@solo_pino
-async def cmd_oggi(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⏳ Recupero lavori di oggi…")
-    try:
-        lavori = sheets.get_lavori_oggi()
-        if not lavori:
-            await update.message.reply_text("📭 Nessun lavoro registrato oggi.")
-            return
-        totale = sum(float(l["prezzo"]) for l in lavori)
-        righe = [lavoro_str(l) for l in lavori]
-        testo = (
-            f"📋 *Oggi — {date.today().strftime('%d/%m/%Y')}*\n\n"
-            + "\n".join(righe)
-            + f"\n\n💰 *Totale oggi: {totale:.2f} €*"
-        )
-        await update.message.reply_text(testo, parse_mode="Markdown")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Errore: {e}")
-
-# ── /mese ────────────────────────────────────────────────────────────────────
-
-@solo_pino
-async def cmd_mese(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⏳ Recupero resoconto mese…")
-    try:
-        oggi = date.today()
-        lavori = sheets.get_lavori_mese(oggi.year, oggi.month)
-        nomi_mesi = ["","Gennaio","Febbraio","Marzo","Aprile","Maggio","Giugno",
-                     "Luglio","Agosto","Settembre","Ottobre","Novembre","Dicembre"]
-        mese_nome = nomi_mesi[oggi.month]
-        if not lavori:
-            await update.message.reply_text(f"📭 Nessun lavoro in {mese_nome} {oggi.year}.")
-            return
-        totale = sum(float(l["prezzo"]) for l in lavori)
-        # Raggruppa per giorno
-        giorni: dict = {}
-        for l in lavori:
-            giorni.setdefault(l["data"], []).append(l)
-
-        righe = []
-        for d_iso in sorted(giorni.keys()):
-            righe.append(f"*{fmt_data(d_iso)}*")
-            for l in giorni[d_iso]:
-                righe.append(f"  • {l['descrizione']}  {fmt_prezzo(l['prezzo'])}"
-                              + (f"  📝{l['nota']}" if l.get("nota") else ""))
-
-        testo = (
-            f"📋 *{mese_nome} {oggi.year}*\n\n"
-            + "\n".join(righe)
-            + f"\n\n💰 *Totale mese: {totale:.2f} €*"
-        )
-        await update.message.reply_text(testo, parse_mode="Markdown")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Errore: {e}")
-
-# ── /totale ──────────────────────────────────────────────────────────────────
-
-@solo_pino
-async def cmd_totale(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⏳ Calcolo totale anno…")
-    try:
-        anno = date.today().year
-        totale = sheets.get_totale_anno(anno)
-        await update.message.reply_text(
-            f"💰 *Totale {anno}: {totale:.2f} €*",
-            parse_mode="Markdown"
-        )
-    except Exception as e:
-        await update.message.reply_text(f"❌ Errore: {e}")
-
 # ── /cerca ───────────────────────────────────────────────────────────────────
 
 async def _esegui_cerca(update: Update, query: str):
@@ -404,6 +332,63 @@ async def cmd_esporta(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         await update.message.reply_text(f"❌ Errore: {e}")
+
+# ── /lista ───────────────────────────────────────────────────────────────────
+
+@solo_pino
+async def cmd_lista(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    kb = [
+        [InlineKeyboardButton("📅 Ultimi 30 giorni", callback_data="lista_30")],
+        [InlineKeyboardButton("📅 Ultimi 2 mesi",    callback_data="lista_60")],
+        [InlineKeyboardButton("📅 Ultimo anno",       callback_data="lista_365")],
+    ]
+    await update.message.reply_text(
+        "📋 *Quale periodo vuoi vedere?*",
+        reply_markup=InlineKeyboardMarkup(kb),
+        parse_mode="Markdown"
+    )
+
+async def lista_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    giorni = int(query.data.split("_")[1])
+    nomi = {30: "ultimi 30 giorni", 60: "ultimi 2 mesi", 365: "ultimo anno"}
+    label = nomi[giorni]
+    await query.edit_message_text(f"⏳ Recupero lavori — {label}…")
+    try:
+        data_limite = (date.today() - timedelta(days=giorni)).isoformat()
+        tutti = sheets.get_all_lavori()
+        lavori = [l for l in tutti if l["data"] >= data_limite]
+        lavori.sort(key=lambda x: x["data"], reverse=True)
+        if not lavori:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=f"📭 Nessun lavoro negli {label}."
+            )
+            return
+        totale = sum(float(l["prezzo"]) for l in lavori if l["prezzo"])
+        header = f"📋 *{label.capitalize()} — {len(lavori)} lavori*\n\n"
+        footer = f"\n\n💰 *Totale: {totale:.2f} €*"
+        # Suddivide in messaggi da max 3400 char
+        chunks = []
+        current = ""
+        for l in lavori:
+            riga = lavoro_str(l) + "\n"
+            if len(current) + len(riga) > 3400:
+                chunks.append(current.rstrip())
+                current = ""
+            current += riga
+        if current:
+            chunks.append(current.rstrip())
+        for i, chunk in enumerate(chunks):
+            testo = (header if i == 0 else "") + chunk + (footer if i == len(chunks) - 1 else "")
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id,
+                text=testo,
+                parse_mode="Markdown"
+            )
+    except Exception as e:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=f"❌ Errore: {e}")
 
 # ── Ricezione backup JSON dall'app web ───────────────────────────────────────
 
@@ -486,13 +471,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🛠 *Studio Lavori Bot*\n\n"
         "Comandi disponibili:\n"
         "/aggiungi — Aggiungi un lavoro\n"
-        "/oggi — Lavori di oggi\n"
-        "/mese — Resoconto mese corrente\n"
-        "/totale — Totale anno in corso\n"
-        "/cerca <nome> — Cerca per cliente\n"
+        "/lista — Lista lavori per periodo\n"
+        "/cerca — Cerca per nome cliente\n"
         "/esporta — Backup JSON per l'app web\n"
-        "/annulla — Annulla operazione in corso\n\n"
-        "💡 Puoi anche mandare direttamente il file JSON di backup dall'app web per sincronizzare.",
+        "/annulla — Annulla operazione in corso",
         parse_mode="Markdown"
     )
 
@@ -529,12 +511,11 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("help",  cmd_start))
     app.add_handler(conv_handler)
     app.add_handler(cerca_handler)
-    app.add_handler(CommandHandler("oggi",   cmd_oggi))
-    app.add_handler(CommandHandler("mese",   cmd_mese))
-    app.add_handler(CommandHandler("totale", cmd_totale))
-    app.add_handler(CommandHandler("esporta",cmd_esporta))
+    app.add_handler(CommandHandler("lista",   cmd_lista))
+    app.add_handler(CommandHandler("esporta", cmd_esporta))
     app.add_handler(CommandHandler("annulla", annulla))
     app.add_handler(CallbackQueryHandler(backup_callback, pattern="^backup_"))
+    app.add_handler(CallbackQueryHandler(lista_callback,  pattern="^lista_"))
     return app
 
 
@@ -542,6 +523,13 @@ async def run_bot():
     app = build_app()
     async with app:
         await app.start()
+        await app.bot.set_my_commands([
+            BotCommand("aggiungi", "Aggiungi un lavoro"),
+            BotCommand("lista",    "Lista lavori per periodo"),
+            BotCommand("cerca",    "Cerca per nome cliente"),
+            BotCommand("esporta",  "Backup JSON per l'app web"),
+            BotCommand("annulla",  "Annulla operazione in corso"),
+        ])
         await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
         logger.info("Bot avviato in polling.")
         await asyncio.Event().wait()  # blocca finché non viene fermato
