@@ -467,4 +467,64 @@ async def backup_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ── /start e /help ────────────────────────────────────────────────────────────
 
 @solo_pino
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):    await update.message.reply_text(
+        "🛠 *Studio Lavori Bot*\n\n"
+        "Comandi disponibili:\n"
+        "/aggiungi — Aggiungi un lavoro\n"
+        "/oggi — Lavori di oggi\n"
+        "/mese — Resoconto mese corrente\n"
+        "/totale — Totale anno in corso\n"
+        "/cerca <nome> — Cerca per cliente\n"
+        "/esporta — Backup JSON per l'app web\n"
+        "/annulla — Annulla operazione in corso\n\n"
+        "💡 Puoi anche mandare direttamente il file JSON di backup dall'app web per sincronizzare.",
+        parse_mode="Markdown"
+    )
+
+# ── Setup Application ─────────────────────────────────────────────────────────
+
+def build_app() -> Application:
+    conv_handler = ConversationHandler(
+        entry_points=[CommandHandler("aggiungi", aggiungi_start)],
+        states={
+            DATA_STEP:   [MessageHandler(filters.TEXT & ~filters.COMMAND, aggiungi_data)],
+            NOME_STEP:   [MessageHandler(filters.TEXT & ~filters.COMMAND, aggiungi_nome)],
+            PREZZO_STEP: [MessageHandler(filters.TEXT & ~filters.COMMAND, aggiungi_prezzo)],
+            NOTA_STEP:   [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, aggiungi_nota),
+                CallbackQueryHandler(skip_nota_callback, pattern="^skip_nota$"),
+            ],
+        },
+        fallbacks=[CommandHandler("annulla", annulla)],
+        allow_reentry=True,
+    )
+
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", cmd_start))
+    app.add_handler(CommandHandler("help",  cmd_start))
+    app.add_handler(conv_handler)
+    app.add_handler(CommandHandler("oggi",   cmd_oggi))
+    app.add_handler(CommandHandler("mese",   cmd_mese))
+    app.add_handler(CommandHandler("totale", cmd_totale))
+    app.add_handler(CommandHandler("cerca",  cmd_cerca))
+    app.add_handler(CommandHandler("esporta",cmd_esporta))
+    app.add_handler(CommandHandler("annulla", annulla))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document), group=-1)
+    app.add_handler(CallbackQueryHandler(backup_callback, pattern="^backup_"))
+    return app
+
+
+async def run_bot():
+    app = build_app()
+    async with app:
+        await app.start()
+        await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
+        logger.info("Bot avviato in polling.")
+        await asyncio.Event().wait()
+
+
+if __name__ == "__main__":
+    t = threading.Thread(target=run_flask, daemon=True)
+    t.start()
+    logger.info(f"Flask health-check su porta {PORT}")
+    asyncio.run(run_bot())
