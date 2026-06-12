@@ -96,6 +96,28 @@ def get_totale_anno(anno: int):
     return total
 
 
+def upsert_lavoro(lavoro: dict):
+    """Aggiunge o aggiorna un singolo lavoro per ID (sync real-time dall'app web)."""
+    ws = get_sheet()
+    record_id = str(lavoro.get("id", ""))
+    data_str = lavoro.get("data", "")
+    descrizione = lavoro.get("descrizione", "")
+    prezzo = lavoro.get("prezzo", 0)
+    nota = lavoro.get("nota", "") or ""
+    tempo_obj = lavoro.get("tempo")
+    tempo_str = ""
+    if tempo_obj and isinstance(tempo_obj, dict):
+        ore = tempo_obj.get("ore", 0)
+        min_ = tempo_obj.get("min", 0)
+        tempo_str = f"{ore}h{min_:02d}m" if ore or min_ else ""
+    row = [record_id, data_str, descrizione, str(prezzo), nota, tempo_str]
+    cell = ws.find(record_id, in_column=1)
+    if cell:
+        ws.update(range_name=f"A{cell.row}:F{cell.row}", values=[row])
+    else:
+        ws.append_row(row)
+
+
 def delete_lavoro(record_id: str):
     ws = get_sheet()
     cell = ws.find(record_id, in_column=1)
@@ -135,27 +157,4 @@ def import_from_json(lavori_list: list) -> int:
         except Exception:
             continue
 
-    # Inserisce tutto in un'unica chiamata API batch
-    if rows:
-        ws.append_rows(rows, value_input_option="USER_ENTERED")
-    return len(rows)
-
-
-def export_to_json() -> list:
-    """Esporta tutti i lavori in formato compatibile con l'app web."""
-    lavori = get_all_lavori()
-    result = []
-    for l in lavori:
-        # Ricostruisce il campo tempo
-        tempo = None
-        if l["tempo"]:
-            try:
-                parts = l["tempo"].replace("h", ":").replace("m", "").split(":")
-                tempo = {"ore": int(parts[0]), "min": int(parts[1])}
-            except Exception:
-                pass
-        result.append({
-            "id": int(l["id"]) if l["id"].isdigit() else l["id"],
-            "data": l["data"],
-            "descrizione": l["descrizione"],
-            "prezzo": float(l["prezzo"]) if l["prezzo
+    # In

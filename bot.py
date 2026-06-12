@@ -17,7 +17,6 @@ import json
 import logging
 import asyncio
 import threading
-import urllib.request
 from datetime import date, datetime, timedelta
 
 from flask import Flask, request as flask_request
@@ -47,54 +46,36 @@ flask_app = Flask(__name__)
 @flask_app.after_request
 def add_cors(response):
     response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
     response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
     return response
 
 @flask_app.route("/")
 def health():
     return "Studio Lavori Bot attivo ✅", 200
 
-@flask_app.route("/invia-backup", methods=["POST", "OPTIONS"])
-def invia_backup():
+@flask_app.route("/sync-lavoro", methods=["POST", "OPTIONS"])
+def sync_lavoro():
+    """Sync real-time: aggiunge, modifica o elimina un singolo lavoro su Sheets."""
     if flask_request.method == "OPTIONS":
         from flask import Response
         return Response(status=204)
     try:
         data = flask_request.get_json(force=True, silent=True) or {}
-        if isinstance(data, list):
-            lavori = data
+        op = data.get("op", "add")
+        if op == "delete":
+            record_id = str(data.get("id", ""))
+            if not record_id:
+                return {"error": "id mancante"}, 400
+            sheets.delete_lavoro(record_id)
+            return {"ok": True, "op": "delete"}
         else:
-            lavori = data.get("lavori") or data.get("registro") or []
-        if not lavori:
-            return {"error": "formato non riconosciuto o backup vuoto"}, 400
-        _pending_backup[CHAT_ID] = lavori
-        n = len(lavori)
-        kb = json.dumps({"inline_keyboard": [[
-            {"text": "✅ Sincronizza", "callback_data": "backup_ok"},
-            {"text": "❌ Annulla",    "callback_data": "backup_cancel"}
-        ]]})
-        payload = json.dumps({
-            "chat_id": CHAT_ID,
-            "text": (
-                f"📦 *Backup ricevuto dal PC*\n\n"
-                f"Contiene *{n} lavori*.\n\n"
-                f"⚠️ Questa operazione *sostituisce tutti i dati* del bot con quelli dell\'app web.\n\n"
-                f"Cosa vuoi fare?"
-            ),
-            "parse_mode": "Markdown",
-            "reply_markup": kb
-        }).encode("utf-8")
-        req = urllib.request.Request(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST"
-        )
-        urllib.request.urlopen(req, timeout=10)
-        return {"ok": True, "lavori": n}
+            lavoro = data.get("lavoro")
+            if not lavoro:
+                return {"error": "lavoro mancante"}, 400
+            sheets.upsert_lavoro(lavoro)
+            return {"ok": True, "op": op}
     except Exception as e:
-        logger.error("invia_backup error: %s", e)
         return {"error": str(e)}, 500
 
 def run_flask():
@@ -484,33 +465,4 @@ def build_app() -> Application:
     )
 
     app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_handler(CommandHandler("start", cmd_start))
-    app.add_handler(CommandHandler("help",  cmd_start))
-    app.add_handler(conv_handler)
-    app.add_handler(CommandHandler("oggi",   cmd_oggi))
-    app.add_handler(CommandHandler("mese",   cmd_mese))
-    app.add_handler(CommandHandler("totale", cmd_totale))
-    app.add_handler(CommandHandler("cerca",  cmd_cerca))
-    app.add_handler(CommandHandler("esporta",cmd_esporta))
-    app.add_handler(CommandHandler("annulla", annulla))
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_document), group=-1)
-    app.add_handler(CallbackQueryHandler(backup_callback, pattern="^backup_"))
-    return app
-
-
-async def run_bot():
-    app = build_app()
-    async with app:
-        await app.start()
-        await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
-        logger.info("Bot avviato in polling.")
-        await asyncio.Event().wait()  # blocca finché non viene fermato
-
-
-if __name__ == "__main__":
-    # Flask in thread separato (health check per Render)
-    t = threading.Thread(target=run_flask, daemon=True)
-    t.start()
-    logger.info(f"Flask health-check su porta {PORT}")
-    # Bot nel thread principale
-    asyncio.run(run_bot())
+    app.add_han
