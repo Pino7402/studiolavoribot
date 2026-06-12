@@ -1,0 +1,6 @@
+flask==3.0.3
+gunicorn==22.0.0
+python-telegram-bot==21.5
+gspread==6.1.2
+google-auth==2.30.0
+python-dotenv==1.0.1
