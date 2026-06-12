@@ -17,6 +17,7 @@ import json
 import logging
 import asyncio
 import threading
+import urllib.request
 from datetime import date, datetime, timedelta
 
 from flask import Flask, request as flask_request
@@ -46,24 +47,20 @@ flask_app = Flask(__name__)
 @flask_app.after_request
 def add_cors(response):
     response.headers["Access-Control-Allow-Origin"] = "*"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
     response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
     return response
 
 @flask_app.route("/")
 def health():
     return "Studio Lavori Bot attivo ✅", 200
 
-_pending_backup: dict[int, list] = {}
-
 @flask_app.route("/invia-backup", methods=["POST", "OPTIONS"])
 def invia_backup():
-    """Riceve il backup JSON dall'app web e manda messaggio Telegram con pulsanti."""
     if flask_request.method == "OPTIONS":
         from flask import Response
         return Response(status=204)
     try:
-        import urllib.request
         data = flask_request.get_json(force=True, silent=True) or {}
         if isinstance(data, list):
             lavori = data
@@ -79,18 +76,27 @@ def invia_backup():
         ]]})
         payload = json.dumps({
             "chat_id": CHAT_ID,
-            "text": f"📦 *Backup ricevuto dal PC*\n\nContiene *{n} lavori*.\n\n⚠️ Questa operazione *sostituisce tutti i dati* del bot con quelli dell'app web.\n\nCosa vuoi fare?",
+            "text": (
+                f"📦 *Backup ricevuto dal PC*\n\n"
+                f"Contiene *{n} lavori*.\n\n"
+                f"⚠️ Questa operazione *sostituisce tutti i dati* del bot con quelli dell\'app web.\n\n"
+                f"Cosa vuoi fare?"
+            ),
             "parse_mode": "Markdown",
             "reply_markup": kb
         }).encode("utf-8")
         req = urllib.request.Request(
             f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-            data=payload, headers={"Content-Type": "application/json"}, method="POST"
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST"
         )
         urllib.request.urlopen(req, timeout=10)
         return {"ok": True, "lavori": n}
     except Exception as e:
+        logger.error("invia_backup error: %s", e)
         return {"error": str(e)}, 500
+
 
 @flask_app.route("/sync-lavoro", methods=["POST", "OPTIONS"])
 def sync_lavoro():
@@ -114,6 +120,7 @@ def sync_lavoro():
             sheets.upsert_lavoro(lavoro)
             return {"ok": True, "op": op}
     except Exception as e:
+        logger.error("sync_lavoro error: %s", e)
         return {"error": str(e)}, 500
 
 def run_flask():
@@ -395,6 +402,8 @@ async def cmd_esporta(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ── Ricezione backup JSON dall'app web ───────────────────────────────────────
 
+_pending_backup: dict = {}  # chat_id → parsed lavori list
+
 @solo_pino
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
@@ -467,7 +476,8 @@ async def backup_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ── /start e /help ────────────────────────────────────────────────────────────
 
 @solo_pino
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):    await update.message.reply_text(
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
         "🛠 *Studio Lavori Bot*\n\n"
         "Comandi disponibili:\n"
         "/aggiungi — Aggiungi un lavoro\n"
@@ -520,11 +530,13 @@ async def run_bot():
         await app.start()
         await app.updater.start_polling(allowed_updates=Update.ALL_TYPES)
         logger.info("Bot avviato in polling.")
-        await asyncio.Event().wait()
+        await asyncio.Event().wait()  # blocca finché non viene fermato
 
 
 if __name__ == "__main__":
+    # Flask in thread separato (health check per Render)
     t = threading.Thread(target=run_flask, daemon=True)
     t.start()
     logger.info(f"Flask health-check su porta {PORT}")
+    # Bot nel thread principale
     asyncio.run(run_bot())
