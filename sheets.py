@@ -157,4 +157,31 @@ def import_from_json(lavori_list: list) -> int:
         except Exception:
             continue
 
-    # In
+    # Inserisce tutto in un\'unica chiamata API batch
+    if rows:
+        ws.append_rows(rows, value_input_option="USER_ENTERED")
+    return len(rows)
+
+
+def export_to_json() -> list:
+    """Esporta tutti i lavori in formato compatibile con l'app web."""
+    lavori = get_all_lavori()
+    result = []
+    for l in lavori:
+        # Ricostruisce il campo tempo
+        tempo = None
+        if l["tempo"]:
+            try:
+                parts = l["tempo"].replace("h", ":").replace("m", "").split(":")
+                tempo = {"ore": int(parts[0]), "min": int(parts[1])}
+            except Exception:
+                pass
+        result.append({
+            "id": int(l["id"]) if l["id"].isdigit() else l["id"],
+            "data": l["data"],
+            "descrizione": l["descrizione"],
+            "prezzo": float(l["prezzo"]) if l["prezzo"] else 0,
+            "nota": l["nota"],
+            "tempo": tempo,
+        })
+    return result
