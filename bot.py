@@ -468,28 +468,41 @@ async def backup_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ── /elimina ─────────────────────────────────────────────────────────────────
 
+ELIMINA_CERCA_STEP = 12
+
 @solo_pino
 async def cmd_elimina(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⏳ Recupero ultimi lavori…")
+    await update.message.reply_text(
+        "🗑 *Quale cliente vuoi eliminare?*\nScrivi il nome (o parte di esso):",
+        parse_mode="Markdown"
+    )
+    return ELIMINA_CERCA_STEP
+
+async def elimina_cerca(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    testo = update.message.text.strip()
+    await update.message.reply_text(f"⏳ Cerco «{testo}»…")
     try:
-        tutti = sheets.get_all_lavori()
-        recenti = sorted(tutti, key=lambda x: x["data"], reverse=True)[:10]
-        if not recenti:
-            await update.message.reply_text("📭 Nessun lavoro trovato.")
-            return
+        lavori = sheets.cerca_lavori(testo)
+        if not lavori:
+            await update.message.reply_text(
+                f"📭 Nessun risultato per «{testo}».\nRiprova o /annulla."
+            )
+            return ELIMINA_CERCA_STEP
+        recenti = sorted(lavori, key=lambda x: x["data"], reverse=True)[:8]
         kb = []
         for l in recenti:
-            desc = l["descrizione"][:28]
+            desc = l["descrizione"][:25]
             label = f"{fmt_data(l['data'])}  {desc}  {fmt_prezzo(l['prezzo'])}"
             kb.append([InlineKeyboardButton(label, callback_data=f"elimina_{l['id']}")])
         kb.append([InlineKeyboardButton("✖ Annulla", callback_data="elimina_cancel")])
         await update.message.reply_text(
-            "🗑 *Quale lavoro vuoi eliminare?*\n_Ultimi 10 inseriti_",
+            f"Trovati *{len(lavori)}* — seleziona quello da eliminare:",
             reply_markup=InlineKeyboardMarkup(kb),
             parse_mode="Markdown"
         )
     except Exception as e:
         await update.message.reply_text(f"❌ Errore: {e}")
+    return ConversationHandler.END
 
 async def elimina_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -504,13 +517,13 @@ async def elimina_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         record_id = data[len("elimina_conf_"):]
         try:
             ok = sheets.delete_lavoro(record_id)
-            msg = "✅ *Lavoro eliminato.*" if ok else "❌ Lavoro non trovato su Sheets."
+            msg = "✅ *Lavoro eliminato.*" if ok else "❌ Lavoro non trovato."
             await query.edit_message_text(msg, parse_mode="Markdown")
         except Exception as e:
             await query.edit_message_text(f"❌ Errore: {e}")
         return
 
-    # data = "elimina_{id}" — chiede conferma
+    # data = "elimina_{id}" → chiede conferma
     record_id = data[len("elimina_"):]
     try:
         tutti = sheets.get_all_lavori()
@@ -573,6 +586,15 @@ def build_app() -> Application:
         allow_reentry=True,
     )
 
+    elimina_handler = ConversationHandler(
+        entry_points=[CommandHandler("elimina", cmd_elimina)],
+        states={
+            ELIMINA_CERCA_STEP: [MessageHandler(filters.TEXT & ~filters.COMMAND, elimina_cerca)],
+        },
+        fallbacks=[CommandHandler("annulla", annulla)],
+        allow_reentry=True,
+    )
+
     app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(MessageHandler(filters.Document.ALL, handle_document), group=-1)
     app.add_handler(CommandHandler("start", cmd_start))
@@ -580,7 +602,7 @@ def build_app() -> Application:
     app.add_handler(conv_handler)
     app.add_handler(cerca_handler)
     app.add_handler(CommandHandler("lista",   cmd_lista))
-    app.add_handler(CommandHandler("elimina", cmd_elimina))
+    app.add_handler(elimina_handler)
     app.add_handler(CommandHandler("esporta", cmd_esporta))
     app.add_handler(CommandHandler("annulla", annulla))
     app.add_handler(CallbackQueryHandler(backup_callback,  pattern="^backup_"))
