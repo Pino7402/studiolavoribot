@@ -17,6 +17,7 @@ import json
 import logging
 import asyncio
 import threading
+import urllib.request
 from datetime import date, datetime, timedelta
 
 from flask import Flask, request as flask_request
@@ -43,9 +44,58 @@ logger = logging.getLogger(__name__)
 
 flask_app = Flask(__name__)
 
+@flask_app.after_request
+def add_cors(response):
+    response.headers["Access-Control-Allow-Origin"] = "*"
+    response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    return response
+
 @flask_app.route("/")
 def health():
     return "Studio Lavori Bot attivo ✅", 200
+
+@flask_app.route("/invia-backup", methods=["POST", "OPTIONS"])
+def invia_backup():
+    if flask_request.method == "OPTIONS":
+        from flask import Response
+        return Response(status=204)
+    try:
+        data = flask_request.get_json(force=True, silent=True) or {}
+        if isinstance(data, list):
+            lavori = data
+        else:
+            lavori = data.get("lavori") or data.get("registro") or []
+        if not lavori:
+            return {"error": "formato non riconosciuto o backup vuoto"}, 400
+        _pending_backup[CHAT_ID] = lavori
+        n = len(lavori)
+        kb = json.dumps({"inline_keyboard": [[
+            {"text": "✅ Sincronizza", "callback_data": "backup_ok"},
+            {"text": "❌ Annulla",    "callback_data": "backup_cancel"}
+        ]]})
+        payload = json.dumps({
+            "chat_id": CHAT_ID,
+            "text": (
+                f"📦 *Backup ricevuto dal PC*\n\n"
+                f"Contiene *{n} lavori*.\n\n"
+                f"⚠️ Questa operazione *sostituisce tutti i dati* del bot con quelli dell\'app web.\n\n"
+                f"Cosa vuoi fare?"
+            ),
+            "parse_mode": "Markdown",
+            "reply_markup": kb
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST"
+        )
+        urllib.request.urlopen(req, timeout=10)
+        return {"ok": True, "lavori": n}
+    except Exception as e:
+        logger.error("invia_backup error: %s", e)
+        return {"error": str(e)}, 500
 
 def run_flask():
     flask_app.run(host="0.0.0.0", port=PORT, debug=False, use_reloader=False)
