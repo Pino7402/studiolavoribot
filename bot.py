@@ -466,6 +466,70 @@ async def backup_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except Exception as e:
             await context.bot.send_message(chat_id=chat_id, text=f"❌ Errore: {e}")
 
+# ── /elimina ─────────────────────────────────────────────────────────────────
+
+@solo_pino
+async def cmd_elimina(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("⏳ Recupero ultimi lavori…")
+    try:
+        tutti = sheets.get_all_lavori()
+        recenti = sorted(tutti, key=lambda x: x["data"], reverse=True)[:10]
+        if not recenti:
+            await update.message.reply_text("📭 Nessun lavoro trovato.")
+            return
+        kb = []
+        for l in recenti:
+            desc = l["descrizione"][:28]
+            label = f"{fmt_data(l['data'])}  {desc}  {fmt_prezzo(l['prezzo'])}"
+            kb.append([InlineKeyboardButton(label, callback_data=f"elimina_{l['id']}")])
+        kb.append([InlineKeyboardButton("✖ Annulla", callback_data="elimina_cancel")])
+        await update.message.reply_text(
+            "🗑 *Quale lavoro vuoi eliminare?*\n_Ultimi 10 inseriti_",
+            reply_markup=InlineKeyboardMarkup(kb),
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        await update.message.reply_text(f"❌ Errore: {e}")
+
+async def elimina_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+
+    if data == "elimina_cancel":
+        await query.edit_message_text("✖ Eliminazione annullata.")
+        return
+
+    if data.startswith("elimina_conf_"):
+        record_id = data[len("elimina_conf_"):]
+        try:
+            ok = sheets.delete_lavoro(record_id)
+            msg = "✅ *Lavoro eliminato.*" if ok else "❌ Lavoro non trovato su Sheets."
+            await query.edit_message_text(msg, parse_mode="Markdown")
+        except Exception as e:
+            await query.edit_message_text(f"❌ Errore: {e}")
+        return
+
+    # data = "elimina_{id}" — chiede conferma
+    record_id = data[len("elimina_"):]
+    try:
+        tutti = sheets.get_all_lavori()
+        lavoro = next((l for l in tutti if str(l["id"]) == record_id), None)
+        if not lavoro:
+            await query.edit_message_text("❌ Lavoro non trovato.")
+            return
+        kb = [[
+            InlineKeyboardButton("✅ Sì, elimina", callback_data=f"elimina_conf_{record_id}"),
+            InlineKeyboardButton("❌ No",          callback_data="elimina_cancel"),
+        ]]
+        await query.edit_message_text(
+            f"⚠️ *Confermi l'eliminazione?*\n\n{lavoro_str(lavoro)}",
+            reply_markup=InlineKeyboardMarkup(kb),
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        await query.edit_message_text(f"❌ Errore: {e}")
+
 # ── /start e /help ────────────────────────────────────────────────────────────
 
 @solo_pino
@@ -476,6 +540,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "/aggiungi — Aggiungi un lavoro\n"
         "/lista — Lista lavori per periodo\n"
         "/cerca — Cerca per nome cliente\n"
+        "/elimina — Elimina un lavoro\n"
         "/esporta — Backup JSON per l'app web\n"
         "/annulla — Annulla operazione in corso",
         parse_mode="Markdown"
@@ -515,10 +580,12 @@ def build_app() -> Application:
     app.add_handler(conv_handler)
     app.add_handler(cerca_handler)
     app.add_handler(CommandHandler("lista",   cmd_lista))
+    app.add_handler(CommandHandler("elimina", cmd_elimina))
     app.add_handler(CommandHandler("esporta", cmd_esporta))
     app.add_handler(CommandHandler("annulla", annulla))
-    app.add_handler(CallbackQueryHandler(backup_callback, pattern="^backup_"))
-    app.add_handler(CallbackQueryHandler(lista_callback,  pattern="^lista_"))
+    app.add_handler(CallbackQueryHandler(backup_callback,  pattern="^backup_"))
+    app.add_handler(CallbackQueryHandler(lista_callback,   pattern="^lista_"))
+    app.add_handler(CallbackQueryHandler(elimina_callback, pattern="^elimina_"))
     return app
 
 
@@ -530,6 +597,7 @@ async def run_bot():
             BotCommand("aggiungi", "Aggiungi un lavoro"),
             BotCommand("lista",    "Lista lavori per periodo"),
             BotCommand("cerca",    "Cerca per nome cliente"),
+            BotCommand("elimina",  "Elimina un lavoro"),
             BotCommand("esporta",  "Backup JSON per l'app web"),
             BotCommand("annulla",  "Annulla operazione in corso"),
         ])
