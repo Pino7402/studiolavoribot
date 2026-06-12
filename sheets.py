@@ -109,35 +109,36 @@ def import_from_json(lavori_list: list) -> int:
     """
     Importa una lista di lavori dal backup JSON dell'app web.
     Sovrascrive i dati esistenti (cancella tutto e reimporta).
+    Usa append_rows() batch per evitare rate limiting su liste grandi.
     Ritorna il numero di record importati.
     """
     ws = get_sheet()
-    # Cancella tutto (tranne intestazione)
-    all_rows = ws.get_all_values()
-    if len(all_rows) > 1:
-        ws.delete_rows(2, len(all_rows))
+    # Cancella tutto tranne intestazione con una singola chiamata
+    ws.resize(1)
 
-    # Reimporta
-    count = 0
-    for l in lavori_list:
+    # Costruisce tutte le righe in memoria
+    rows = []
+    for i, l in enumerate(lavori_list):
         try:
             data_str = l.get("data", "")
             descrizione = l.get("descrizione", "")
             prezzo = l.get("prezzo", 0)
             nota = l.get("nota", "") or ""
-            # Campo tempo: può essere {ore, min} o None
             tempo_obj = l.get("tempo")
             tempo_str = ""
             if tempo_obj and isinstance(tempo_obj, dict):
                 ore = tempo_obj.get("ore", 0)
                 min_ = tempo_obj.get("min", 0)
                 tempo_str = f"{ore}h{min_:02d}m" if ore or min_ else ""
-            record_id = str(l.get("id", int(datetime.now().timestamp() * 1000) + count))
-            ws.append_row([record_id, data_str, descrizione, str(prezzo), nota, tempo_str])
-            count += 1
+            record_id = str(l.get("id", int(datetime.now().timestamp() * 1000) + i))
+            rows.append([record_id, data_str, descrizione, str(prezzo), nota, tempo_str])
         except Exception:
             continue
-    return count
+
+    # Inserisce tutto in un'unica chiamata API batch
+    if rows:
+        ws.append_rows(rows, value_input_option="USER_ENTERED")
+    return len(rows)
 
 
 def export_to_json() -> list:
@@ -157,8 +158,4 @@ def export_to_json() -> list:
             "id": int(l["id"]) if l["id"].isdigit() else l["id"],
             "data": l["data"],
             "descrizione": l["descrizione"],
-            "prezzo": float(l["prezzo"]) if l["prezzo"] else 0,
-            "nota": l["nota"],
-            "tempo": tempo,
-        })
-    return result
+            "prezzo": float(l["prezzo"]) if l["prezzo
