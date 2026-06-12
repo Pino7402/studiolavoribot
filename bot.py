@@ -180,11 +180,14 @@ def fmt_prezzo(p) -> str:
         return str(p)
 
 def lavoro_str(l: dict) -> str:
-    riga = f"📅 {fmt_data(l['data'])}  •  {l['descrizione']}  •  {fmt_prezzo(l['prezzo'])}"
+    riga = f"📅 *{fmt_data(l['data'])}*  –  {l['descrizione']}\n   💶 *{fmt_prezzo(l['prezzo'])}*"
+    extras = []
     if l.get("nota"):
-        riga += f"\n    📝 {l['nota']}"
+        extras.append(f"📝 {l['nota']}")
     if l.get("tempo"):
-        riga += f"  •  ⏱ {l['tempo']}"
+        extras.append(f"⏱ {l['tempo']}")
+    if extras:
+        riga += "   " + "  ·  ".join(extras)
     return riga
 
 # ── ConversationHandler: /aggiungi ───────────────────────────────────────────
@@ -285,9 +288,9 @@ async def _esegui_cerca(update: Update, query: str):
         totale = sum(float(l["prezzo"]) for l in lavori)
         righe = [lavoro_str(l) for l in lavori[-20:]]
         testo = (
-            f"🔍 *Risultati per «{query}»*\n\n"
-            + "\n".join(righe)
-            + f"\n\n💰 *Totale trovati: {totale:.2f} €*  ({len(lavori)} lavori)"
+            f"🔍 *Risultati per «{query}»* ({len(lavori)} lavori)\n\n"
+            + "\n\n".join(righe)
+            + f"\n\n💰 *Totale: {totale:.2f} €*"
         )
         await update.message.reply_text(testo, parse_mode="Markdown")
     except Exception as e:
@@ -373,7 +376,7 @@ async def lista_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         chunks = []
         current = ""
         for l in lavori:
-            riga = lavoro_str(l) + "\n"
+            riga = lavoro_str(l) + "\n\n"
             if len(current) + len(riga) > 3400:
                 chunks.append(current.rstrip())
                 current = ""
