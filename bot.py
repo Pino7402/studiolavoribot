@@ -443,7 +443,7 @@ def build_app() -> Application:
     app.add_handler(CommandHandler("cerca",  cmd_cerca))
     app.add_handler(CommandHandler("esporta",cmd_esporta))
     app.add_handler(CommandHandler("annulla", annulla))
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_document))
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document), group=-1)
     app.add_handler(CallbackQueryHandler(backup_callback, pattern="^backup_"))
     return app
 
