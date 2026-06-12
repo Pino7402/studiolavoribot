@@ -54,6 +54,44 @@ def add_cors(response):
 def health():
     return "Studio Lavori Bot attivo ✅", 200
 
+_pending_backup: dict[int, list] = {}
+
+@flask_app.route("/invia-backup", methods=["POST", "OPTIONS"])
+def invia_backup():
+    """Riceve il backup JSON dall'app web e manda messaggio Telegram con pulsanti."""
+    if flask_request.method == "OPTIONS":
+        from flask import Response
+        return Response(status=204)
+    try:
+        import urllib.request
+        data = flask_request.get_json(force=True, silent=True) or {}
+        if isinstance(data, list):
+            lavori = data
+        else:
+            lavori = data.get("lavori") or data.get("registro") or []
+        if not lavori:
+            return {"error": "formato non riconosciuto o backup vuoto"}, 400
+        _pending_backup[CHAT_ID] = lavori
+        n = len(lavori)
+        kb = json.dumps({"inline_keyboard": [[
+            {"text": "✅ Sincronizza", "callback_data": "backup_ok"},
+            {"text": "❌ Annulla",    "callback_data": "backup_cancel"}
+        ]]})
+        payload = json.dumps({
+            "chat_id": CHAT_ID,
+            "text": f"📦 *Backup ricevuto dal PC*\n\nContiene *{n} lavori*.\n\n⚠️ Questa operazione *sostituisce tutti i dati* del bot con quelli dell'app web.\n\nCosa vuoi fare?",
+            "parse_mode": "Markdown",
+            "reply_markup": kb
+        }).encode("utf-8")
+        req = urllib.request.Request(
+            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+            data=payload, headers={"Content-Type": "application/json"}, method="POST"
+        )
+        urllib.request.urlopen(req, timeout=10)
+        return {"ok": True, "lavori": n}
+    except Exception as e:
+        return {"error": str(e)}, 500
+
 @flask_app.route("/sync-lavoro", methods=["POST", "OPTIONS"])
 def sync_lavoro():
     """Sync real-time: aggiunge, modifica o elimina un singolo lavoro su Sheets."""
@@ -357,8 +395,6 @@ async def cmd_esporta(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ── Ricezione backup JSON dall'app web ───────────────────────────────────────
 
-_pending_backup: dict = {}  # chat_id → parsed lavori list
-
 @solo_pino
 async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
     doc = update.message.document
@@ -431,38 +467,4 @@ async def backup_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ── /start e /help ────────────────────────────────────────────────────────────
 
 @solo_pino
-async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🛠 *Studio Lavori Bot*\n\n"
-        "Comandi disponibili:\n"
-        "/aggiungi — Aggiungi un lavoro\n"
-        "/oggi — Lavori di oggi\n"
-        "/mese — Resoconto mese corrente\n"
-        "/totale — Totale anno in corso\n"
-        "/cerca <nome> — Cerca per cliente\n"
-        "/esporta — Backup JSON per l'app web\n"
-        "/annulla — Annulla operazione in corso\n\n"
-        "💡 Puoi anche mandare direttamente il file JSON di backup dall'app web per sincronizzare.",
-        parse_mode="Markdown"
-    )
-
-# ── Setup Application ─────────────────────────────────────────────────────────
-
-def build_app() -> Application:
-    conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("aggiungi", aggiungi_start)],
-        states={
-            DATA_STEP:   [MessageHandler(filters.TEXT & ~filters.COMMAND, aggiungi_data)],
-            NOME_STEP:   [MessageHandler(filters.TEXT & ~filters.COMMAND, aggiungi_nome)],
-            PREZZO_STEP: [MessageHandler(filters.TEXT & ~filters.COMMAND, aggiungi_prezzo)],
-            NOTA_STEP:   [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, aggiungi_nota),
-                CallbackQueryHandler(skip_nota_callback, pattern="^skip_nota$"),
-            ],
-        },
-        fallbacks=[CommandHandler("annulla", annulla)],
-        allow_reentry=True,
-    )
-
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
-    app.add_han
+async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
