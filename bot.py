@@ -190,6 +190,7 @@ def lavoro_str(l: dict) -> str:
 # ── ConversationHandler: /aggiungi ───────────────────────────────────────────
 
 DATA_STEP, NOME_STEP, PREZZO_STEP, NOTA_STEP = range(4)
+CERCA_STEP = 10
 
 @solo_pino
 async def aggiungi_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -346,22 +347,15 @@ async def cmd_totale(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ── /cerca ───────────────────────────────────────────────────────────────────
 
-@solo_pino
-async def cmd_cerca(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = " ".join(context.args).strip() if context.args else ""
-    if not query:
-        await update.message.reply_text(
-            "🔍 Usa: /cerca <nome>\nEsempio: /cerca Profumeria"
-        )
-        return
+async def _esegui_cerca(update: Update, query: str):
     await update.message.reply_text(f"⏳ Cerco «{query}»…")
     try:
         lavori = sheets.cerca_lavori(query)
         if not lavori:
             await update.message.reply_text(f"📭 Nessun risultato per «{query}».")
-            return
+            return ConversationHandler.END
         totale = sum(float(l["prezzo"]) for l in lavori)
-        righe = [lavoro_str(l) for l in lavori[-20:]]  # ultimi 20 risultati
+        righe = [lavoro_str(l) for l in lavori[-20:]]
         testo = (
             f"🔍 *Risultati per «{query}»*\n\n"
             + "\n".join(righe)
@@ -370,6 +364,17 @@ async def cmd_cerca(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(testo, parse_mode="Markdown")
     except Exception as e:
         await update.message.reply_text(f"❌ Errore: {e}")
+    return ConversationHandler.END
+
+@solo_pino
+async def cmd_cerca(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if context.args:
+        return await _esegui_cerca(update, " ".join(context.args).strip())
+    await update.message.reply_text("🔍 Chi vuoi cercare?")
+    return CERCA_STEP
+
+async def cerca_testo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    return await _esegui_cerca(update, update.message.text.strip())
 
 # ── /esporta ─────────────────────────────────────────────────────────────────
 
@@ -509,17 +514,26 @@ def build_app() -> Application:
         allow_reentry=True,
     )
 
+    cerca_handler = ConversationHandler(
+        entry_points=[CommandHandler("cerca", cmd_cerca)],
+        states={
+            CERCA_STEP: [MessageHandler(filters.TEXT & ~filters.COMMAND, cerca_testo)],
+        },
+        fallbacks=[CommandHandler("annulla", annulla)],
+        allow_reentry=True,
+    )
+
     app = ApplicationBuilder().token(BOT_TOKEN).build()
+    app.add_handler(MessageHandler(filters.Document.ALL, handle_document), group=-1)
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("help",  cmd_start))
     app.add_handler(conv_handler)
+    app.add_handler(cerca_handler)
     app.add_handler(CommandHandler("oggi",   cmd_oggi))
     app.add_handler(CommandHandler("mese",   cmd_mese))
     app.add_handler(CommandHandler("totale", cmd_totale))
-    app.add_handler(CommandHandler("cerca",  cmd_cerca))
     app.add_handler(CommandHandler("esporta",cmd_esporta))
     app.add_handler(CommandHandler("annulla", annulla))
-    app.add_handler(MessageHandler(filters.Document.ALL, handle_document), group=-1)
     app.add_handler(CallbackQueryHandler(backup_callback, pattern="^backup_"))
     return app
 
