@@ -334,10 +334,17 @@ async def cerca_testo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @solo_pino
 async def cmd_esporta(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("⏳ Preparo il backup da importare nell'app web…")
+    await update.message.reply_text("⏳ Cerco i lavori nuovi aggiunti dal bot…")
     try:
-        lavori = sheets.export_to_json()
-        # Formato compatibile con il backup dell'app web
+        lavori = await asyncio.to_thread(sheets.export_pending_to_json)
+        if not lavori:
+            await update.message.reply_text(
+                "📭 *Nessun nuovo lavoro da esportare.*\n"
+                "Tutti i lavori aggiunti dal bot sono gia\' stati esportati all\'app web.",
+                parse_mode="Markdown"
+            )
+            return
+        n = len(lavori)
         backup = {
             "version": 1,
             "exported_at": datetime.now().isoformat(),
@@ -347,15 +354,18 @@ async def cmd_esporta(update: Update, context: ContextTypes.DEFAULT_TYPE):
         data_str = datetime.now().strftime("%Y%m%d_%H%M")
         json_bytes = json.dumps(backup, ensure_ascii=False, indent=2).encode("utf-8")
         file_obj = io.BytesIO(json_bytes)
-        file_obj.name = f"backup_registro_{data_str}.json"
+        file_obj.name = f"backup_da_bot_{data_str}.json"
+        titolo = "1 lavoro aggiunto dal bot" if n == 1 else f"{n} lavori aggiunti dal bot"
         await update.message.reply_document(
             document=InputFile(file_obj, filename=file_obj.name),
             caption=(
-                f"📦 Backup di {len(lavori)} lavori\n"
-                "Importalo nell'app web: _💾 Backup & Ripristino → scegli questo file_"
+                f"📦 *{titolo}*\n"
+                "Importalo nell\'app web: _💾 Backup & Ripristino → 📂 Scegli file_"
             ),
             parse_mode="Markdown"
         )
+        # Svuota la lista pendente solo dopo invio riuscito
+        await asyncio.to_thread(sheets.clear_bot_pending)
     except Exception as e:
         await update.message.reply_text(f"❌ Errore: {e}")
 

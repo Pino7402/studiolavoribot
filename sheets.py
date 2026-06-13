@@ -15,6 +15,7 @@ SCOPES = [
 
 HEADERS = ["ID", "Data", "Descrizione", "Prezzo", "Nota", "Tempo"]
 SHEET_NAME = "Lavori"
+PENDING_SHEET = "BotPending"
 
 
 def get_client():
@@ -35,6 +36,46 @@ def get_sheet():
         ws = sh.add_worksheet(title=SHEET_NAME, rows=2000, cols=len(HEADERS))
         ws.append_row(HEADERS)
     return ws
+
+
+def _get_pending_ws():
+    """Restituisce il worksheet BotPending (lo crea se manca)."""
+    gc = get_client()
+    sh = gc.open_by_key(os.environ["GOOGLE_SHEET_ID"])
+    try:
+        return sh.worksheet(PENDING_SHEET)
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet(title=PENDING_SHEET, rows=500, cols=1)
+        ws.append_row(["ID"])
+        return ws
+
+
+def add_to_bot_pending(record_id: str):
+    """Segna un ID come 'aggiunto dal bot' (da esportare al prossimo /esporta)."""
+    try:
+        ws = _get_pending_ws()
+        ws.append_row([str(record_id)])
+    except Exception:
+        pass  # non bloccare l'aggiunta se BotPending fallisce
+
+
+def get_bot_pending_ids() -> list:
+    ws = _get_pending_ws()
+    rows = ws.get_all_values()
+    ids = []
+    for r in rows[1:]:  # salta header
+        if r and r[0]:
+            ids.append(str(r[0]))
+    return ids
+
+
+def clear_bot_pending():
+    """Svuota il foglio BotPending (lasciando l'header)."""
+    ws = _get_pending_ws()
+    ws.resize(1)
+    # ricrea l'header se la resize ha tolto tutto
+    if not ws.get_all_values():
+        ws.append_row(["ID"])
 
 
 def _rows_to_lavori(rows):
@@ -65,6 +106,7 @@ def add_lavoro(data_str: str, descrizione: str, prezzo: float, nota: str = "", t
     record_id = str(int(datetime.now().timestamp() * 1000))
     row = [record_id, data_str, descrizione.strip(), str(prezzo), nota.strip(), tempo.strip()]
     ws.append_row(row)
+    add_to_bot_pending(record_id)
     return _rows_to_lavori([row])[0]
 
 
@@ -241,6 +283,35 @@ def export_to_json() -> list:
     lavori = get_all_lavori()
     result = []
     for l in lavori:
+        tempo = None
+        if l["tempo"]:
+            try:
+                parts = l["tempo"].replace("h", ":").replace("m", "").split(":")
+                tempo = {"ore": int(parts[0]), "min": int(parts[1])}
+            except Exception:
+                pass
+        result.append({
+            "id": int(l["id"]) if l["id"].isdigit() else l["id"],
+            "data": l["data"],
+            "descrizione": l["descrizione"],
+            "prezzo": float(l["prezzo"]) if l["prezzo"] else 0,
+            "nota": l["nota"],
+            "tempo": tempo,
+        })
+    return result
+
+
+
+def export_pending_to_json() -> list:
+    """Esporta solo i lavori aggiunti dal bot (presenti in BotPending).
+    Non svuota la lista pendente: lo fa il chiamante DOPO che l'invio e' andato a buon fine."""
+    pending_ids = set(get_bot_pending_ids())
+    if not pending_ids:
+        return []
+    all_lavori = get_all_lavori()
+    filtered = [l for l in all_lavori if str(l["id"]) in pending_ids]
+    result = []
+    for l in filtered:
         tempo = None
         if l["tempo"]:
             try:
