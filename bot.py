@@ -78,9 +78,9 @@ def invia_backup():
             "chat_id": CHAT_ID,
             "text": (
                 f"📦 *Backup ricevuto dal PC*\n\n"
-                f"Contiene *{n} lavori*.\n\n"
-                f"⚠️ Questa operazione *sostituisce tutti i dati* del bot con quelli dell\'app web.\n\n"
-                f"Cosa vuoi fare?"
+                f"Contiene *{n} lavori* dall\'app web.\n\n"
+                f"🔄 Verranno *aggiunti i nuovi* e *aggiornati i modificati*. Nulla verra\' cancellato.\n\n"
+                f"Procedo con la sincronizzazione?"
             ),
             "parse_mode": "Markdown",
             "reply_markup": kb
@@ -431,9 +431,9 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         await update.message.reply_text(
             f"📦 *Backup ricevuto dal PC*\n\n"
-            f"Contiene *{n} lavori*.\n\n"
-            f"⚠️ Questa operazione *sostituisce tutti i dati* del bot con quelli dell'app web.\n\n"
-            f"Cosa vuoi fare?",
+            f"Contiene *{n} lavori* dall'app web.\n\n"
+            f"🔄 Verranno *aggiunti i nuovi* e *aggiornati i modificati*. Nulla verra' cancellato.\n\n"
+            f"Procedo con la sincronizzazione?",
             reply_markup=InlineKeyboardMarkup(kb),
             parse_mode="Markdown"
         )
@@ -455,14 +455,17 @@ async def backup_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not lavori:
             await query.edit_message_text("❌ Backup non trovato. Rimanda il file.")
             return
-        await query.edit_message_text("⏳ Importo i dati…")
+        await query.edit_message_text("⏳ Confronto e aggiorno…")
         try:
-            count = sheets.import_from_json(lavori)
-            await context.bot.send_message(
-                chat_id=chat_id,
-                text=f"✅ *Sincronizzazione completata!*\n{count} lavori importati.",
-                parse_mode="Markdown"
+            r = sheets.merge_from_json(lavori)
+            msg = (
+                "✅ *Sincronizzazione completata!*\n\n"
+                f"➕ Nuovi: *{r['nuovi']}*\n"
+                f"✏️ Aggiornati: *{r['aggiornati']}*\n"
+                f"= Invariati: *{r['invariati']}*\n\n"
+                f"📊 Totale lavori su Sheets: *{r['totale_dopo']}*"
             )
+            await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
         except Exception as e:
             await context.bot.send_message(chat_id=chat_id, text=f"❌ Errore: {e}")
 

@@ -96,21 +96,27 @@ def get_totale_anno(anno: int):
     return total
 
 
-def upsert_lavoro(lavoro: dict):
-    """Aggiunge o aggiorna un singolo lavoro per ID (sync real-time dall'app web)."""
-    ws = get_sheet()
-    record_id = str(lavoro.get("id", ""))
-    data_str = lavoro.get("data", "")
-    descrizione = lavoro.get("descrizione", "")
-    prezzo = lavoro.get("prezzo", 0)
-    nota = lavoro.get("nota", "") or ""
-    tempo_obj = lavoro.get("tempo")
+def _lavoro_to_row(l: dict) -> list:
+    """Normalizza un lavoro JSON dell'app web in una riga del foglio."""
+    data_str = l.get("data", "")
+    descrizione = l.get("descrizione", "")
+    prezzo = l.get("prezzo", 0)
+    nota = l.get("nota", "") or ""
+    tempo_obj = l.get("tempo")
     tempo_str = ""
     if tempo_obj and isinstance(tempo_obj, dict):
         ore = tempo_obj.get("ore", 0)
         min_ = tempo_obj.get("min", 0)
         tempo_str = f"{ore}h{min_:02d}m" if ore or min_ else ""
-    row = [record_id, data_str, descrizione, str(prezzo), nota, tempo_str]
+    record_id = str(l.get("id", "")) or str(int(datetime.now().timestamp() * 1000))
+    return [record_id, data_str, descrizione, str(prezzo), nota, tempo_str]
+
+
+def upsert_lavoro(lavoro: dict):
+    """Aggiunge o aggiorna un singolo lavoro per ID (sync real-time dall'app web)."""
+    ws = get_sheet()
+    row = _lavoro_to_row(lavoro)
+    record_id = row[0]
     cell = ws.find(record_id, in_column=1)
     if cell:
         ws.update(range_name=f"A{cell.row}:F{cell.row}", values=[row])
@@ -127,37 +133,68 @@ def delete_lavoro(record_id: str):
     return True
 
 
-def import_from_json(lavori_list: list) -> int:
+def merge_from_json(lavori_list: list) -> dict:
     """
-    Importa una lista di lavori dal backup JSON dell'app web.
-    Sovrascrive i dati esistenti (cancella tutto e reimporta).
-    Usa append_rows() batch per evitare rate limiting su liste grandi.
-    Ritorna il numero di record importati.
+    Merge incrementale: confronta i lavori del backup con quelli gia' su Sheets
+    e applica solo le differenze (nuovi + modificati). Non cancella nulla.
+    Ritorna {nuovi, aggiornati, invariati, totale_dopo}.
     """
     ws = get_sheet()
-    # Cancella tutto tranne intestazione con una singola chiamata
-    ws.resize(1)
+    all_rows = ws.get_all_values()
+    existing_rows = all_rows[1:] if len(all_rows) > 1 else []
 
-    # Costruisce tutte le righe in memoria
-    rows = []
-    for i, l in enumerate(lavori_list):
+    # Mappa id -> (riga_1based, valori_normalizzati)
+    id_to_row = {}
+    for i, r in enumerate(existing_rows):
+        r = list(r) + [""] * (len(HEADERS) - len(r))
+        rid = str(r[0])
+        if rid:
+            id_to_row[rid] = (i + 2, r[:len(HEADERS)])  # +2 = 1-based + header
+
+    nuovi_rows = []
+    aggiornamenti = []  # [(range, [valori])]
+    n_invariati = 0
+
+    for l in lavori_list:
         try:
-            data_str = l.get("data", "")
-            descrizione = l.get("descrizione", "")
-            prezzo = l.get("prezzo", 0)
-            nota = l.get("nota", "") or ""
-            tempo_obj = l.get("tempo")
-            tempo_str = ""
-            if tempo_obj and isinstance(tempo_obj, dict):
-                ore = tempo_obj.get("ore", 0)
-                min_ = tempo_obj.get("min", 0)
-                tempo_str = f"{ore}h{min_:02d}m" if ore or min_ else ""
-            record_id = str(l.get("id", int(datetime.now().timestamp() * 1000) + i))
-            rows.append([record_id, data_str, descrizione, str(prezzo), nota, tempo_str])
+            new_row = _lavoro_to_row(l)
+            record_id = new_row[0]
+            if not record_id:
+                continue
+            if record_id in id_to_row:
+                row_num, old_row = id_to_row[record_id]
+                if [str(x) for x in old_row] != [str(x) for x in new_row]:
+                    aggiornamenti.append((f"A{row_num}:F{row_num}", new_row))
+                else:
+                    n_invariati += 1
+            else:
+                nuovi_rows.append(new_row)
         except Exception:
             continue
 
-    # Inserisce tutto in un\'unica chiamata API batch
+    if aggiornamenti:
+        body = [{"range": rng, "values": [vals]} for rng, vals in aggiornamenti]
+        ws.batch_update(body, value_input_option="USER_ENTERED")
+
+    if nuovi_rows:
+        ws.append_rows(nuovi_rows, value_input_option="USER_ENTERED")
+
+    return {
+        "nuovi": len(nuovi_rows),
+        "aggiornati": len(aggiornamenti),
+        "invariati": n_invariati,
+        "totale_dopo": len(existing_rows) + len(nuovi_rows),
+    }
+
+
+def import_from_json(lavori_list: list) -> int:
+    """
+    DEPRECATA — usa merge_from_json per backup incrementale.
+    Mantenuta per compatibilita': sovrascrive tutto il foglio.
+    """
+    ws = get_sheet()
+    ws.resize(1)
+    rows = [_lavoro_to_row(l) for l in lavori_list if l]
     if rows:
         ws.append_rows(rows, value_input_option="USER_ENTERED")
     return len(rows)
@@ -168,7 +205,6 @@ def export_to_json() -> list:
     lavori = get_all_lavori()
     result = []
     for l in lavori:
-        # Ricostruisce il campo tempo
         tempo = None
         if l["tempo"]:
             try:
