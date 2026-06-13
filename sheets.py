@@ -133,6 +133,42 @@ def delete_lavoro(record_id: str):
     return True
 
 
+def preview_merge(lavori_list: list) -> dict:
+    """
+    Calcola quanti lavori sarebbero nuovi/aggiornati/invariati SENZA scrivere nulla.
+    Usata per mostrare l'anteprima nel popup di conferma.
+    """
+    ws = get_sheet()
+    all_rows = ws.get_all_values()
+    existing_rows = all_rows[1:] if len(all_rows) > 1 else []
+
+    id_to_row = {}
+    for r in existing_rows:
+        r = list(r) + [""] * (len(HEADERS) - len(r))
+        rid = str(r[0])
+        if rid:
+            id_to_row[rid] = r[:len(HEADERS)]
+
+    n_nuovi = n_agg = n_inv = 0
+    for l in lavori_list:
+        try:
+            new_row = _lavoro_to_row(l)
+            rid = new_row[0]
+            if not rid:
+                continue
+            if rid in id_to_row:
+                old = id_to_row[rid]
+                if [str(x) for x in old] != [str(x) for x in new_row]:
+                    n_agg += 1
+                else:
+                    n_inv += 1
+            else:
+                n_nuovi += 1
+        except Exception:
+            continue
+    return {"nuovi": n_nuovi, "aggiornati": n_agg, "invariati": n_inv}
+
+
 def merge_from_json(lavori_list: list) -> dict:
     """
     Merge incrementale: confronta i lavori del backup con quelli gia' su Sheets

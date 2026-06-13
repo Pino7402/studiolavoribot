@@ -68,8 +68,33 @@ def invia_backup():
             lavori = data.get("lavori") or data.get("registro") or []
         if not lavori:
             return {"error": "formato non riconosciuto o backup vuoto"}, 400
+
+        # Dry-run: quante differenze ci sono PRIMA di chiedere conferma
+        preview = sheets.preview_merge(lavori)
+        diff = preview["nuovi"] + preview["aggiornati"]
+
+        if diff == 0:
+            payload = json.dumps({
+                "chat_id": CHAT_ID,
+                "text": "✅ *Tutto gia' sincronizzato*\nNessuna novita' da aggiornare.",
+                "parse_mode": "Markdown"
+            }).encode("utf-8")
+            urllib.request.urlopen(
+                urllib.request.Request(
+                    f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                    data=payload, headers={"Content-Type": "application/json"}, method="POST"
+                ), timeout=10
+            )
+            return {"ok": True, "lavori": len(lavori), "diff": 0}
+
         _pending_backup[CHAT_ID] = lavori
-        n = len(lavori)
+        titolo = "1 lavoro da sincronizzare" if diff == 1 else f"{diff} lavori da sincronizzare"
+        dett = []
+        if preview["nuovi"]:
+            dett.append(f"➕ {preview['nuovi']} nuovo" if preview["nuovi"] == 1 else f"➕ {preview['nuovi']} nuovi")
+        if preview["aggiornati"]:
+            dett.append(f"✏️ {preview['aggiornati']} aggiornato" if preview["aggiornati"] == 1 else f"✏️ {preview['aggiornati']} aggiornati")
+        dett_str = "  ·  ".join(dett)
         kb = json.dumps({"inline_keyboard": [[
             {"text": "✅ Sincronizza", "callback_data": "backup_ok"},
             {"text": "❌ Annulla",    "callback_data": "backup_cancel"}
@@ -77,22 +102,20 @@ def invia_backup():
         payload = json.dumps({
             "chat_id": CHAT_ID,
             "text": (
-                f"📦 *Backup ricevuto dal PC*\n\n"
-                f"Contiene *{n} lavori* dall\'app web.\n\n"
-                f"🔄 Verranno *aggiunti i nuovi* e *aggiornati i modificati*. Nulla verra\' cancellato.\n\n"
-                f"Procedo con la sincronizzazione?"
+                f"📦 *Nuovo backup ricevuto dal PC*\n\n"
+                f"*{titolo}*\n{dett_str}\n\n"
+                f"Procedo?"
             ),
             "parse_mode": "Markdown",
             "reply_markup": kb
         }).encode("utf-8")
-        req = urllib.request.Request(
-            f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-            data=payload,
-            headers={"Content-Type": "application/json"},
-            method="POST"
+        urllib.request.urlopen(
+            urllib.request.Request(
+                f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+                data=payload, headers={"Content-Type": "application/json"}, method="POST"
+            ), timeout=10
         )
-        urllib.request.urlopen(req, timeout=10)
-        return {"ok": True, "lavori": n}
+        return {"ok": True, "lavori": len(lavori), "diff": diff}
     except Exception as e:
         logger.error("invia_backup error: %s", e)
         return {"error": str(e)}, 500
@@ -421,19 +444,30 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ Formato backup non riconosciuto.")
             return
 
+        preview = await asyncio.to_thread(sheets.preview_merge, lavori)
+        diff = preview["nuovi"] + preview["aggiornati"]
+        if diff == 0:
+            await update.message.reply_text(
+                "✅ *Tutto gia\' sincronizzato*\nNessuna novita\' da aggiornare.",
+                parse_mode="Markdown"
+            )
+            return
         _pending_backup[update.effective_chat.id] = lavori
-        n = len(lavori)
-        kb = [
-            [
-                InlineKeyboardButton("✅ Sincronizza", callback_data="backup_ok"),
-                InlineKeyboardButton("❌ Annulla",    callback_data="backup_cancel"),
-            ]
-        ]
+        titolo = "1 lavoro da sincronizzare" if diff == 1 else f"{diff} lavori da sincronizzare"
+        dett = []
+        if preview["nuovi"]:
+            dett.append(f"➕ {preview['nuovi']} nuovo" if preview["nuovi"] == 1 else f"➕ {preview['nuovi']} nuovi")
+        if preview["aggiornati"]:
+            dett.append(f"✏️ {preview['aggiornati']} aggiornato" if preview["aggiornati"] == 1 else f"✏️ {preview['aggiornati']} aggiornati")
+        dett_str = "  ·  ".join(dett)
+        kb = [[
+            InlineKeyboardButton("✅ Sincronizza", callback_data="backup_ok"),
+            InlineKeyboardButton("❌ Annulla",    callback_data="backup_cancel"),
+        ]]
         await update.message.reply_text(
-            f"📦 *Backup ricevuto dal PC*\n\n"
-            f"Contiene *{n} lavori* dall'app web.\n\n"
-            f"🔄 Verranno *aggiunti i nuovi* e *aggiornati i modificati*. Nulla verra' cancellato.\n\n"
-            f"Procedo con la sincronizzazione?",
+            f"📦 *Nuovo backup ricevuto dal PC*\n\n"
+            f"*{titolo}*\n{dett_str}\n\n"
+            f"Procedo?",
             reply_markup=InlineKeyboardMarkup(kb),
             parse_mode="Markdown"
         )
@@ -455,16 +489,20 @@ async def backup_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not lavori:
             await query.edit_message_text("❌ Backup non trovato. Rimanda il file.")
             return
-        await query.edit_message_text("⏳ Confronto e aggiorno…")
+        await query.edit_message_text("⏳ Sincronizzo…")
         try:
-            r = sheets.merge_from_json(lavori)
-            msg = (
-                "✅ *Sincronizzazione completata!*\n\n"
-                f"➕ Nuovi: *{r['nuovi']}*\n"
-                f"✏️ Aggiornati: *{r['aggiornati']}*\n"
-                f"= Invariati: *{r['invariati']}*\n\n"
-                f"📊 Totale lavori su Sheets: *{r['totale_dopo']}*"
-            )
+            r = await asyncio.to_thread(sheets.merge_from_json, lavori)
+            mod = r["nuovi"] + r["aggiornati"]
+            if mod == 0:
+                msg = "✅ *Tutto gia\' sincronizzato*\nNessuna novita\' da aggiornare."
+            else:
+                titolo = "✅ *Sincronizzato 1 lavoro*" if mod == 1 else f"✅ *Sincronizzati {mod} lavori*"
+                dett = []
+                if r["nuovi"]:
+                    dett.append(f"➕ {r['nuovi']} nuovo" if r["nuovi"] == 1 else f"➕ {r['nuovi']} nuovi")
+                if r["aggiornati"]:
+                    dett.append(f"✏️ {r['aggiornati']} aggiornato" if r["aggiornati"] == 1 else f"✏️ {r['aggiornati']} aggiornati")
+                msg = titolo + "\n" + "  ·  ".join(dett)
             await context.bot.send_message(chat_id=chat_id, text=msg, parse_mode="Markdown")
         except Exception as e:
             await context.bot.send_message(chat_id=chat_id, text=f"❌ Errore: {e}")
